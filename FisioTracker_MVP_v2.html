@@ -1,0 +1,379 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+  <title>FisioTracker MVP</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin:0; padding:16px; min-height:100vh; background:#121212; color:#fff; display:flex; align-items:center; justify-content:center; }
+    .wrap { width:min(560px, 100%); }
+    .card { background:#161616; border:1px solid #2a2a2a; border-radius:16px; padding:14px; margin-bottom:12px; }
+    h1 { margin:0 0 6px; font-size:18px; color:#4CAF50; }
+    p { margin:0; color:#aaaaaa; line-height:1.35; }
+    .grid { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .kpi { font-size:64px; font-weight:900; color:#4CAF50; text-align:center; margin:10px 0 0; text-shadow:0 0 20px rgba(76,175,80,0.35); }
+    .sub { text-align:center; color:#ff9800; font-size:16px; margin-top:6px; }
+    .muted { color:#aaaaaa; font-size:13px; }
+    button {
+      width:100%; padding:14px 12px; border-radius:12px; border:1px solid #4CAF50;
+      background:#333; color:#fff; font-weight:700; font-size:16px; cursor:pointer;
+      transition: transform .05s ease;
+    }
+    button:active { transform: scale(0.99); background:#4CAF50; color:#0b0b0b; }
+    .primary { background:#4CAF50; border:none; color:#0b0b0b; }
+    input {
+      width:100%; padding:10px; border-radius:12px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff;
+    }
+    .pill { display:inline-block; padding:6px 10px; border-radius:999px; border:1px solid #2a2a2a; background:#0f0f0f; font-size:12px; }
+    .ok { border-color:#2d6a4f; }
+    .warn { border-color:#b08900; }
+    .bad { border-color:#9b2226; }
+    .log { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size:12px; white-space:pre-wrap; background:#0f0f0f; border:1px solid #2a2a2a;
+      border-radius:12px; padding:10px;
+    }
+    .row { display:flex; gap:10px; align-items:center; justify-content:space-between; }
+    .tiny { font-size:12px; color:#9aa0a6; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>FisioTracker (MVP)</h1>
+      <p>
+        1) Acostate o sentate cómodo. <br>
+        2) Sujetá el celu firme en la <b>pantorrilla/tibia</b> (pantalla hacia arriba). <br>
+        3) Tocá <b>Iniciar sensor</b> y mové el teléfono apenas 1–2 segundos. Luego <b>Calibrar 0°</b>.
+      </p>
+      <div class="tiny" id="contextInfo"></div>
+    </div>
+
+    <div class="card">
+      <div class="kpi"><span id="angle">0.0</span>°</div>
+      <div class="sub">Máximo serie: <b id="maxAngle">0.0</b>°</div>
+      <div style="height:10px"></div>
+      <div class="row">
+        <span class="muted">Reps (serie): <b id="reps">0</b></span>
+        <span id="status" class="pill warn">Esperando iniciar</span>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="grid">
+        <div>
+          <div class="muted">Objetivo (°)</div>
+          <input id="goal" type="number" min="1" max="180" step="1" value="20" />
+        </div>
+        <div>
+          <div class="muted">Umbral rep (°)</div>
+          <input id="threshold" type="number" min="1" max="180" step="1" value="15" />
+        </div>
+      </div>
+      <div style="height:10px"></div>
+      <div class="grid">
+        <button id="btnStart" class="primary">Iniciar sensor</button>
+        <button id="btnCal">Calibrar 0°</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="grid">
+        <button id="btnSeries">Iniciar serie</button>
+        <button id="btnStop">Finalizar serie</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="grid">
+        <button id="btnSave">Guardar sesión</button>
+        <button id="btnExport">Exportar CSV</button>
+      </div>
+      <div style="height:10px"></div>
+      <div class="muted">
+        Si ves “Iniciado pero sin datos”, casi siempre es porque el archivo está abierto como <b>content://</b>.
+        Solución: abrir desde Chrome como <b>file://</b> o (mejor) subirlo a Drive/GitHub Pages y abrirlo por https.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Historial (últimas 10)</div>
+      <div id="history" class="log">Sin datos.</div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const elAngle = document.getElementById('angle');
+  const elMaxAngle = document.getElementById('maxAngle');
+  const elReps = document.getElementById('reps');
+  const elStatus = document.getElementById('status');
+  const elHistory = document.getElementById('history');
+  const elContextInfo = document.getElementById('contextInfo');
+
+  const inpGoal = document.getElementById('goal');
+  const inpThreshold = document.getElementById('threshold');
+
+  const btnStart = document.getElementById('btnStart');
+  const btnCal = document.getElementById('btnCal');
+  const btnSeries = document.getElementById('btnSeries');
+  const btnStop = document.getElementById('btnStop');
+  const btnSave = document.getElementById('btnSave');
+  const btnExport = document.getElementById('btnExport');
+
+  let sensorActive = false;
+  let haveReading = false;
+
+  let zeroOffset = 0;
+  let filtered = null;
+  const alpha = 0.18;
+
+  let useAxis = 'beta';
+  let axisLocked = false;
+  let sampleCount = 0;
+  let betaMin = +Infinity, betaMax = -Infinity;
+  let gammaMin = +Infinity, gammaMax = -Infinity;
+
+  let seriesActive = false;
+  let reps = 0;
+  let maxAngle = 0;
+  let above = false;
+  const hysteresis = 3;
+
+  let noDataTimer = null;
+
+  function setStatus(text, cls) {
+    elStatus.textContent = text;
+    elStatus.className = 'pill ' + (cls || '');
+  }
+
+  function normalizeDeg(deg) {
+    if (typeof deg !== 'number' || !isFinite(deg)) return null;
+    return ((deg + 180) % 360) - 180;
+  }
+
+  function ema(x) {
+    if (filtered == null) filtered = x;
+    filtered = alpha * x + (1 - alpha) * filtered;
+    return filtered;
+  }
+
+  function chooseAxis(betaAbs, gammaAbs) {
+    if (axisLocked) return;
+    sampleCount += 1;
+    betaMin = Math.min(betaMin, betaAbs); betaMax = Math.max(betaMax, betaAbs);
+    gammaMin = Math.min(gammaMin, gammaAbs); gammaMax = Math.max(gammaMax, gammaAbs);
+    if (sampleCount >= 25) {
+      const betaRange = betaMax - betaMin;
+      const gammaRange = gammaMax - gammaMin;
+      useAxis = (gammaRange > betaRange) ? 'gamma' : 'beta';
+      axisLocked = true;
+    }
+  }
+
+  function getRelativeAngleDeg(rawAxisDeg) {
+    const mag = Math.abs(rawAxisDeg);
+    const smooth = ema(mag);
+    const rel = Math.max(0, smooth - zeroOffset);
+    return Math.min(180, rel);
+  }
+
+  function updateUI(angleRel) {
+    elAngle.textContent = angleRel.toFixed(1);
+    elMaxAngle.textContent = maxAngle.toFixed(1);
+    elReps.textContent = String(reps);
+
+    const goal = Number(inpGoal.value || 0);
+    if (!sensorActive) {
+      setStatus('Detenido', 'warn');
+      return;
+    }
+    if (!haveReading) {
+      setStatus('Iniciado pero sin datos', 'bad');
+      return;
+    }
+    if (seriesActive) {
+      if (angleRel >= goal) setStatus('En objetivo', 'ok');
+      else setStatus('En serie', 'warn');
+    } else {
+      setStatus('Listo', 'ok');
+    }
+  }
+
+  function onOrientation(e) {
+    const b = normalizeDeg(e.beta);
+    const g = normalizeDeg(e.gamma);
+    if (b == null || g == null) return;
+
+    haveReading = true;
+    if (noDataTimer) { clearTimeout(noDataTimer); noDataTimer = null; }
+
+    chooseAxis(Math.abs(b), Math.abs(g));
+    const raw = (useAxis === 'gamma') ? g : b;
+    const angleRel = getRelativeAngleDeg(raw);
+
+    if (seriesActive) {
+      if (angleRel > maxAngle) maxAngle = angleRel;
+
+      const thr = Number(inpThreshold.value || 0);
+      if (!above && angleRel >= thr) above = true;
+      if (above && angleRel <= Math.max(0, thr - hysteresis)) {
+        reps += 1;
+        above = false;
+      }
+    }
+
+    updateUI(angleRel);
+  }
+
+  async function requestPermissionIfNeeded() {
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== 'granted') throw new Error('Permiso denegado');
+    }
+  }
+
+  function startSensors() {
+    if (sensorActive) return;
+    window.addEventListener('deviceorientation', onOrientation, true);
+    sensorActive = true;
+    setStatus('Iniciando...', 'warn');
+
+    // Si en 2.5s no llegó NINGUNA lectura, damos guía concreta
+    noDataTimer = setTimeout(() => {
+      if (!haveReading) {
+        updateUI(0);
+        alert(
+          'El sensor arrancó, pero el navegador no entrega datos.\n\n' +
+          'Casi siempre es por abrir el archivo como content:// (visor del sistema).\n' +
+          'Probá UNA de estas:\n' +
+          '1) Abrir el HTML desde Chrome con URL file:// (no content://).\n' +
+          '2) Subir el archivo a Google Drive y abrirlo desde Drive (https).\n' +
+          '3) En Xiaomi: revisá si tenés activado “Sensores desactivados” (tile / opciones dev).'
+        );
+      }
+    }, 2500);
+  }
+
+  btnStart.addEventListener('click', async () => {
+    try {
+      await requestPermissionIfNeeded();
+      // reset
+      axisLocked = false; sampleCount = 0;
+      betaMin = +Infinity; betaMax = -Infinity;
+      gammaMin = +Infinity; gammaMax = -Infinity;
+      filtered = null;
+      haveReading = false;
+
+      startSensors();
+      updateUI(0);
+    } catch (err) {
+      alert('No se pudo activar sensores. Revisá permisos del navegador / “Sensores desactivados”.');
+      setStatus('Permiso no otorgado', 'bad');
+    }
+  });
+
+  btnCal.addEventListener('click', () => {
+    if (!sensorActive) {
+      alert('Primero tocá “Iniciar sensor”.');
+      return;
+    }
+    if (!haveReading || filtered == null) {
+      alert('Todavía no llegó ninguna lectura. Mové el teléfono 1–2 segundos y probá de nuevo.');
+      return;
+    }
+    zeroOffset = filtered;
+    above = false;
+    if (!seriesActive) maxAngle = 0;
+    updateUI(0);
+    alert('Calibrado: 0° fijado en la posición actual.');
+  });
+
+  btnSeries.addEventListener('click', () => {
+    if (!haveReading) {
+      alert('Primero iniciá el sensor y esperá que aparezcan lecturas.');
+      return;
+    }
+    seriesActive = true;
+    reps = 0;
+    maxAngle = 0;
+    above = false;
+    setStatus('En serie', 'warn');
+  });
+
+  btnStop.addEventListener('click', () => {
+    seriesActive = false;
+    above = false;
+    updateUI(0);
+  });
+
+  function loadHistory() {
+    const key = 'fisiotracker_history_v1';
+    let data = [];
+    try { data = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
+    data = Array.isArray(data) ? data : [];
+    return { key, data };
+  }
+
+  function renderHistory() {
+    const { data } = loadHistory();
+    if (!data.length) { elHistory.textContent = 'Sin datos.'; return; }
+    const last = data.slice(-10).reverse();
+    elHistory.textContent = last.map(s => {
+      return [
+        `${s.date}  ${s.time}`,
+        `  reps=${s.reps}   max=${s.maxDeg}°   goal=${s.goal}°   thr=${s.thr}°`,
+        `  nota=${s.note || '-'}`
+      ].join('\n');
+    }).join('\n\n');
+  }
+
+  btnSave.addEventListener('click', () => {
+    const { key, data } = loadHistory();
+    const now = new Date();
+    const entry = {
+      date: now.toLocaleDateString(),
+      time: now.toLocaleTimeString(),
+      reps,
+      maxDeg: Number(maxAngle.toFixed(1)),
+      goal: Number(inpGoal.value || 0),
+      thr: Number(inpThreshold.value || 0),
+      note: prompt('Nota opcional (dolor 0-10, etc.):', '') || ''
+    };
+    data.push(entry);
+    localStorage.setItem(key, JSON.stringify(data));
+    renderHistory();
+    alert('Sesión guardada.');
+  });
+
+  btnExport.addEventListener('click', () => {
+    const { data } = loadHistory();
+    if (!data.length) { alert('No hay historial para exportar.'); return; }
+    const header = ['date','time','reps','maxDeg','goal','thr','note'];
+    const rows = data.map(d => header.map(k => {
+      const v = (d[k] ?? '').toString();
+      const needs = /[",\n]/.test(v);
+      const safe = v.replace(/"/g, '""');
+      return needs ? `"${safe}"` : safe;
+    }).join(','));
+    const csv = [header.join(','), ...rows].join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'fisiotracker_historial.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  });
+
+  // Info de contexto (te ayuda a ver el problema)
+  elContextInfo.textContent =
+    `URL: ${location.href.slice(0, 60)}${location.href.length > 60 ? '…' : ''} | ` +
+    `SecureContext: ${window.isSecureContext ? 'sí' : 'no'}`;
+
+  renderHistory();
+  updateUI(0);
+})();
+</script>
+</body>
+</html>
