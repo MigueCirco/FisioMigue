@@ -22,7 +22,7 @@
     }
     button:active { transform: scale(0.99); background:#4CAF50; color:#0b0b0b; }
     .primary { background:#4CAF50; border:none; color:#0b0b0b; }
-    input {
+    input, select {
       width:100%; padding:10px; border-radius:12px; border:1px solid #2a2a2a; background:#0f0f0f; color:#fff;
     }
     .pill { display:inline-block; padding:6px 10px; border-radius:999px; border:1px solid #2a2a2a; background:#0f0f0f; font-size:12px; }
@@ -42,10 +42,10 @@
     <div class="card">
       <h1>FisioTracker (MVP)</h1>
       <p>
-        1) Acostate o sentate cómodo. <br>
-        2) Sujetá el celu firme en la <b>pantorrilla/tibia</b> (pantalla hacia arriba). <br>
-        3) Tocá <b>Iniciar sensor</b>. Movelo apenas 1–2s. Luego poné tu postura inicial y tocá <b>Calibrar 0°</b>. <br>
-        4) Si al flexionar el número <b>baja</b>, tocá <b>Invertir sentido</b>.
+        1) Acostate o sentate cómodo.<br>
+        2) Sujetá el celu firme en la <b>pantorrilla/tibia</b> (pantalla hacia arriba).<br>
+        3) Tocá <b>Iniciar sensor</b> y mové el teléfono apenas 1–2 s.<br>
+        4) Ponete en tu <b>posición de referencia</b> (la que querés que sea “0°”) y tocá <b>Calibrar 0°</b>.
       </p>
       <div class="tiny" id="contextInfo"></div>
     </div>
@@ -58,7 +58,10 @@
         <span class="muted">Reps (serie): <b id="reps">0</b></span>
         <span id="status" class="pill warn">Esperando iniciar</span>
       </div>
-      <div class="tiny" id="axisInfo"></div>
+      <div class="row" style="margin-top:8px">
+        <span class="tiny">Eje: <b id="axisLbl">auto</b></span>
+        <span class="tiny">Dirección: <b id="dirLbl">normal</b></span>
+      </div>
     </div>
 
     <div class="card">
@@ -72,29 +75,55 @@
           <input id="threshold" type="number" min="1" max="180" step="1" value="15" />
         </div>
       </div>
+
       <div style="height:10px"></div>
+
+      <div class="grid">
+        <div>
+          <div class="muted">Zona “cero” (°)</div>
+          <input id="zeroZone" type="number" min="0" max="30" step="1" value="3" />
+        </div>
+        <div>
+          <div class="muted">Conteo de reps</div>
+          <select id="repMode">
+            <option value="cycle" selected>Sube y vuelve a cero</option>
+            <option value="threshold">Pico (umbral) y baja</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="height:10px"></div>
+
       <div class="grid">
         <button id="btnStart" class="primary">Iniciar sensor</button>
         <button id="btnCal">Calibrar 0°</button>
       </div>
+
       <div style="height:10px"></div>
+
       <div class="grid">
-        <button id="btnInvert">Invertir sentido</button>
+        <button id="btnInvert">Invertir dirección</button>
+        <button id="btnAxis">Eje: auto</button>
+      </div>
+
+      <div style="height:10px"></div>
+
+      <div class="grid">
         <button id="btnSeries">Iniciar serie</button>
-      </div>
-      <div style="height:10px"></div>
-      <div class="grid">
         <button id="btnStop">Finalizar serie</button>
-        <button id="btnSave">Guardar sesión</button>
       </div>
+
       <div style="height:10px"></div>
+
       <div class="grid">
+        <button id="btnSave">Guardar sesión</button>
         <button id="btnExport">Exportar CSV</button>
-        <button id="btnReset">Reiniciar (todo)</button>
       </div>
+
       <div style="height:10px"></div>
       <div class="muted">
-        Tip: si el valor “se va” raro, recalibrá 0° en la postura actual. Si al flexionar baja, invertí sentido.
+        Tip para tu caso (sentado): poné la pierna en la postura que querés usar de “cero” (por ej. <b>lo más flexionado que llegues</b>) y tocá <b>Calibrar 0°</b>.  
+        Si el ángulo te “va para el lado contrario”, tocá <b>Invertir dirección</b>.
       </div>
     </div>
 
@@ -112,43 +141,52 @@
   const elStatus = document.getElementById('status');
   const elHistory = document.getElementById('history');
   const elContextInfo = document.getElementById('contextInfo');
-  const elAxisInfo = document.getElementById('axisInfo');
+  const elAxisLbl = document.getElementById('axisLbl');
+  const elDirLbl = document.getElementById('dirLbl');
 
   const inpGoal = document.getElementById('goal');
   const inpThreshold = document.getElementById('threshold');
+  const inpZeroZone = document.getElementById('zeroZone');
+  const selRepMode = document.getElementById('repMode');
 
   const btnStart = document.getElementById('btnStart');
   const btnCal = document.getElementById('btnCal');
   const btnInvert = document.getElementById('btnInvert');
+  const btnAxis = document.getElementById('btnAxis');
   const btnSeries = document.getElementById('btnSeries');
   const btnStop = document.getElementById('btnStop');
   const btnSave = document.getElementById('btnSave');
   const btnExport = document.getElementById('btnExport');
-  const btnReset = document.getElementById('btnReset');
 
   let sensorActive = false;
   let haveReading = false;
 
-  // Filtro (EMA)
-  let filteredRaw = null;
+  // Calibración (0°)
+  let zeroOffset = 0;
+
+  // Filtro EMA
+  let filtered = null;
   const alpha = 0.18;
 
-  // Selección de eje
-  let useAxis = 'beta';
+  // Eje (auto / beta / gamma) + “invertir”
+  let useAxis = 'auto';          // 'auto' | 'beta' | 'gamma'
+  let autoChosen = 'beta';       // resultado del auto
   let axisLocked = false;
   let sampleCount = 0;
   let betaMin = +Infinity, betaMax = -Infinity;
   let gammaMin = +Infinity, gammaMax = -Infinity;
 
-  // Referencia (base) para ángulo relativo
-  let baseRaw = null;          // guardado al calibrar 0°
-  let invert = false;          // invierte el sentido si hace falta
-
-  // Serie
+  let invert = false;            // cambia el sentido (útil sentado)
   let seriesActive = false;
+
+  // Métricas de serie
   let reps = 0;
   let maxAngle = 0;
-  let above = false;
+
+  // Máquina de estados para reps
+  // mode=cycle: cuenta cuando sube (>=thr) y vuelve a “ceroZone”
+  // mode=threshold: cuenta cuando sube (>=thr) y baja por debajo de (thr-hyst)
+  let repState = 'rest'; // 'rest' | 'up'
   const hysteresis = 3;
 
   let noDataTimer = null;
@@ -163,60 +201,94 @@
     return ((deg + 180) % 360) - 180;
   }
 
-  function emaRaw(x) {
-    if (filteredRaw == null) filteredRaw = x;
-    filteredRaw = alpha * x + (1 - alpha) * filteredRaw;
-    return filteredRaw;
+  function ema(x) {
+    if (filtered == null) filtered = x;
+    filtered = alpha * x + (1 - alpha) * filtered;
+    return filtered;
   }
 
-  function chooseAxis(beta, gamma) {
+  function chooseAxisAuto(betaAbs, gammaAbs) {
     if (axisLocked) return;
     sampleCount += 1;
-
-    // rango de movimiento (sin abs; pero el rango da igual el signo)
-    betaMin = Math.min(betaMin, beta); betaMax = Math.max(betaMax, beta);
-    gammaMin = Math.min(gammaMin, gamma); gammaMax = Math.max(gammaMax, gamma);
-
+    betaMin = Math.min(betaMin, betaAbs); betaMax = Math.max(betaMax, betaAbs);
+    gammaMin = Math.min(gammaMin, gammaAbs); gammaMax = Math.max(gammaMax, gammaAbs);
     if (sampleCount >= 25) {
       const betaRange = betaMax - betaMin;
       const gammaRange = gammaMax - gammaMin;
-      useAxis = (gammaRange > betaRange) ? 'gamma' : 'beta';
+      autoChosen = (gammaRange > betaRange) ? 'gamma' : 'beta';
       axisLocked = true;
+      elAxisLbl.textContent = autoChosen + ' (auto)';
+      btnAxis.textContent = 'Eje: auto';
     }
   }
 
-  function clamp01(x, lo, hi) {
-    return Math.min(hi, Math.max(lo, x));
+  function currentAxis(betaDeg, gammaDeg) {
+    if (useAxis === 'beta') return betaDeg;
+    if (useAxis === 'gamma') return gammaDeg;
+    // auto:
+    return (autoChosen === 'gamma') ? gammaDeg : betaDeg;
   }
 
-  // Ángulo relativo REAL:
-  //   angle = |raw - baseRaw|   (y si invert=true, no cambia el módulo, pero ayuda a "sentido" si quisieras mostrar firmado)
-  function computeAngleRel(rawSmoothed) {
-    if (baseRaw == null) return 0;
-    const delta = (rawSmoothed - baseRaw);
-    const mag = Math.abs(delta);
-    return clamp01(mag, 0, 180);
-  }
+  function computeAngleRel(rawAxisDeg) {
+    // Usamos magnitud (abs) porque es más estable al girar 180° el teléfono.
+    const mag = Math.abs(rawAxisDeg);
+    const smooth = ema(mag);
 
-  function updateAxisInfo() {
-    elAxisInfo.textContent =
-      `Eje: ${useAxis.toUpperCase()} | base: ${baseRaw == null ? '—' : baseRaw.toFixed(1)}° | invert: ${invert ? 'sí' : 'no'}`;
+    // Dirección:
+    const signed = invert ? (zeroOffset - smooth) : (smooth - zeroOffset);
+
+    // Clampeamos a 0..180 (evita negativos visuales)
+    const rel = Math.max(0, signed);
+    return Math.min(180, rel);
   }
 
   function updateUI(angleRel) {
     elAngle.textContent = angleRel.toFixed(1);
     elMaxAngle.textContent = maxAngle.toFixed(1);
     elReps.textContent = String(reps);
+    elDirLbl.textContent = invert ? 'invertida' : 'normal';
 
-    const goal = Number(inpGoal.value || 0);
-    if (!sensorActive) { setStatus('Detenido', 'warn'); return; }
-    if (!haveReading) { setStatus('Iniciado pero sin datos', 'bad'); return; }
-
+    if (!sensorActive) {
+      setStatus('Detenido', 'warn');
+      return;
+    }
+    if (!haveReading) {
+      setStatus('Iniciado pero sin datos', 'bad');
+      return;
+    }
     if (seriesActive) {
-      if (angleRel >= goal) setStatus('En objetivo', 'ok');
+      const goal = Number(inpGoal.value || 0);
+      if (goal > 0 && angleRel >= goal) setStatus('En objetivo', 'ok');
       else setStatus('En serie', 'warn');
     } else {
       setStatus('Listo', 'ok');
+    }
+  }
+
+  function stepRepCounter(angleRel) {
+    const thr = Number(inpThreshold.value || 0);
+    const zz = Number(inpZeroZone.value || 0);
+    const mode = selRepMode.value;
+
+    if (mode === 'cycle') {
+      // Rest → Up: cuando llega al umbral
+      if (repState === 'rest' && angleRel >= thr) {
+        repState = 'up';
+      }
+      // Up → Rest: cuando vuelve a zona cero (o cerca)
+      if (repState === 'up' && angleRel <= zz) {
+        reps += 1;
+        repState = 'rest';
+      }
+    } else {
+      // threshold: cuenta cuando “sube” y luego “baja” por debajo del umbral-histeresis
+      if (repState === 'rest' && angleRel >= thr) {
+        repState = 'up';
+      }
+      if (repState === 'up' && angleRel <= Math.max(0, thr - hysteresis)) {
+        reps += 1;
+        repState = 'rest';
+      }
     }
   }
 
@@ -228,31 +300,26 @@
     haveReading = true;
     if (noDataTimer) { clearTimeout(noDataTimer); noDataTimer = null; }
 
-    // auto-eje
-    chooseAxis(b, g);
+    chooseAxisAuto(Math.abs(b), Math.abs(g));
 
-    const raw = (useAxis === 'gamma') ? g : b;
-    const rawMaybeInverted = invert ? -raw : raw;
-
-    const smoothed = emaRaw(rawMaybeInverted);
-    const angleRel = computeAngleRel(smoothed);
+    const ax = currentAxis(b, g);
+    const angleRel = computeAngleRel(ax);
 
     if (seriesActive) {
       if (angleRel > maxAngle) maxAngle = angleRel;
-
-      const thr = Number(inpThreshold.value || 0);
-      if (!above && angleRel >= thr) above = true;
-      if (above && angleRel <= Math.max(0, thr - hysteresis)) {
-        reps += 1;
-        above = false;
-      }
+      stepRepCounter(angleRel);
     }
 
-    updateAxisInfo();
+    // Etiqueta de eje (si no está locked aún, mostramos "auto…")
+    if (useAxis === 'beta') elAxisLbl.textContent = 'beta';
+    else if (useAxis === 'gamma') elAxisLbl.textContent = 'gamma';
+    else elAxisLbl.textContent = axisLocked ? (autoChosen + ' (auto)') : 'auto…';
+
     updateUI(angleRel);
   }
 
   async function requestPermissionIfNeeded() {
+    // iOS 13+: pide permiso. Android/Chrome normalmente NO lo requiere.
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
       const res = await DeviceOrientationEvent.requestPermission();
@@ -271,53 +338,33 @@
         updateUI(0);
         alert(
           'El sensor arrancó, pero el navegador no entrega datos.\n\n' +
-          'Soluciones típicas:\n' +
-          '1) Abrir por HTTPS (GitHub Pages) ✅\n' +
-          '2) Revisar permisos del navegador\n' +
-          '3) En Xiaomi: “Sensores desactivados” (tile / opciones dev)'
+          'Probá UNA de estas:\n' +
+          '1) Abrir por https (GitHub Pages/Drive).\n' +
+          '2) Si lo abrís local: que sea file:// (no content://).\n' +
+          '3) En Xiaomi: revisá si tenés activado “Sensores desactivados”.'
         );
       }
     }, 2500);
   }
 
-  function resetAll() {
-    seriesActive = false;
-    reps = 0;
-    maxAngle = 0;
-    above = false;
-
-    // base/calibración
-    baseRaw = null;
-    invert = false;
-
-    // sensor tracking
+  function resetAutoAxis() {
     axisLocked = false; sampleCount = 0;
     betaMin = +Infinity; betaMax = -Infinity;
     gammaMin = +Infinity; gammaMax = -Infinity;
-    filteredRaw = null;
-    haveReading = false;
-
-    updateAxisInfo();
-    updateUI(0);
-    setStatus(sensorActive ? 'Listo' : 'Detenido', sensorActive ? 'ok' : 'warn');
+    autoChosen = 'beta';
   }
 
   btnStart.addEventListener('click', async () => {
     try {
       await requestPermissionIfNeeded();
 
-      // reset de análisis pero no corta listeners si ya están
-      axisLocked = false; sampleCount = 0;
-      betaMin = +Infinity; betaMax = -Infinity;
-      gammaMin = +Infinity; gammaMax = -Infinity;
-      filteredRaw = null;
+      // reset lectura
+      filtered = null;
       haveReading = false;
+      resetAutoAxis();
 
       startSensors();
-      updateAxisInfo();
       updateUI(0);
-
-      alert('Sensor iniciado. Ahora poné tu postura inicial y tocá “Calibrar 0°”.');
     } catch (err) {
       alert('No se pudo activar sensores. Revisá permisos del navegador / “Sensores desactivados”.');
       setStatus('Permiso no otorgado', 'bad');
@@ -326,47 +373,47 @@
 
   btnCal.addEventListener('click', () => {
     if (!sensorActive) { alert('Primero tocá “Iniciar sensor”.'); return; }
-    if (!haveReading || filteredRaw == null) {
+    if (!haveReading || filtered == null) {
       alert('Todavía no llegó ninguna lectura. Mové el teléfono 1–2 segundos y probá de nuevo.');
       return;
     }
-    baseRaw = filteredRaw;
-    above = false;
+    zeroOffset = filtered;
+    repState = 'rest';
     if (!seriesActive) maxAngle = 0;
-    updateAxisInfo();
     updateUI(0);
-    alert('Calibrado: 0° fijado en la posición actual (sirve para sentado o acostado).');
+    alert('Calibrado: 0° fijado en la posición actual.');
   });
 
   btnInvert.addEventListener('click', () => {
     invert = !invert;
-    // Al invertir conviene recalibrar base para no “pegar saltos”
-    if (filteredRaw != null) baseRaw = filteredRaw;
-    above = false;
-    if (!seriesActive) maxAngle = 0;
-    updateAxisInfo();
-    updateUI(0);
-    alert('Invertido. Recalibré automáticamente la base en la posición actual.');
+    repState = 'rest';
+    updateUI(parseFloat(elAngle.textContent) || 0);
+  });
+
+  btnAxis.addEventListener('click', () => {
+    // Cicla: auto -> beta -> gamma -> auto
+    if (useAxis === 'auto') { useAxis = 'beta'; btnAxis.textContent = 'Eje: beta'; }
+    else if (useAxis === 'beta') { useAxis = 'gamma'; btnAxis.textContent = 'Eje: gamma'; }
+    else { useAxis = 'auto'; btnAxis.textContent = 'Eje: auto'; resetAutoAxis(); }
   });
 
   btnSeries.addEventListener('click', () => {
-    if (!haveReading || filteredRaw == null) { alert('Primero iniciá el sensor y esperá lecturas.'); return; }
-    if (baseRaw == null) { alert('Primero tocá “Calibrar 0°” en tu postura inicial.'); return; }
+    if (!haveReading) { alert('Primero iniciá el sensor y esperá lecturas.'); return; }
     seriesActive = true;
     reps = 0;
     maxAngle = 0;
-    above = false;
+    repState = 'rest';
     setStatus('En serie', 'warn');
   });
 
   btnStop.addEventListener('click', () => {
     seriesActive = false;
-    above = false;
+    repState = 'rest';
     updateUI(0);
   });
 
   function loadHistory() {
-    const key = 'fisiotracker_history_v1';
+    const key = 'fisiotracker_history_v2';
     let data = [];
     try { data = JSON.parse(localStorage.getItem(key) || '[]'); } catch {}
     data = Array.isArray(data) ? data : [];
@@ -380,8 +427,8 @@
     elHistory.textContent = last.map(s => {
       return [
         `${s.date}  ${s.time}`,
-        `  reps=${s.reps}   max=${s.maxDeg}°   goal=${s.goal}°   thr=${s.thr}°`,
-        `  invert=${s.invert ? 'sí' : 'no'}  eje=${s.axis}`,
+        `  reps=${s.reps}   max=${s.maxDeg}°   goal=${s.goal}°   thr=${s.thr}°   zeroZone=${s.zeroZone}°`,
+        `  axis=${s.axis}   invert=${s.invert}   repMode=${s.repMode}`,
         `  nota=${s.note || '-'}`
       ].join('\n');
     }).join('\n\n');
@@ -397,8 +444,10 @@
       maxDeg: Number(maxAngle.toFixed(1)),
       goal: Number(inpGoal.value || 0),
       thr: Number(inpThreshold.value || 0),
+      zeroZone: Number(inpZeroZone.value || 0),
+      repMode: selRepMode.value,
       invert,
-      axis: useAxis,
+      axis: (useAxis === 'auto') ? (autoChosen + '(auto)') : useAxis,
       note: prompt('Nota opcional (dolor 0-10, etc.):', '') || ''
     };
     data.push(entry);
@@ -410,7 +459,7 @@
   btnExport.addEventListener('click', () => {
     const { data } = loadHistory();
     if (!data.length) { alert('No hay historial para exportar.'); return; }
-    const header = ['date','time','reps','maxDeg','goal','thr','invert','axis','note'];
+    const header = ['date','time','reps','maxDeg','goal','thr','zeroZone','repMode','invert','axis','note'];
     const rows = data.map(d => header.map(k => {
       const v = (d[k] ?? '').toString();
       const needs = /[",\n]/.test(v);
@@ -430,17 +479,13 @@
     URL.revokeObjectURL(url);
   });
 
-  btnReset.addEventListener('click', () => {
-    if (!confirm('¿Reiniciar todo (calibración + serie)?')) return;
-    resetAll();
-  });
-
+  // Contexto
   elContextInfo.textContent =
-    `URL: ${location.href.slice(0, 60)}${location.href.length > 60 ? '…' : ''} | ` +
+    `URL: ${location.href.slice(0, 70)}${location.href.length > 70 ? '…' : ''} | ` +
     `SecureContext: ${window.isSecureContext ? 'sí' : 'no'}`;
 
   renderHistory();
-  resetAll();
+  updateUI(0);
 })();
 </script>
 </body>
